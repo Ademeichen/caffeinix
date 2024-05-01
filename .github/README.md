@@ -70,14 +70,14 @@ $ sudo apt install build-essential gcc make perl dkms git gdb-multiarch qemu-sys
 You need a RISC-V "newlib" tool chain from https://github.com/riscv/riscv-gnu-toolchain
 
 > [!IMPORTANT] 
-> You need to install 'qemu-system-misc' if you are using Docker to deploy otherwise you can't use the command 'make qemu-gdb'.
+> You need to install 'qemu-system-misc' if you are using Docker to deploy otherwise you can't use commands 'make qemu-gdb' and 'make qemu'.
 
 > [!NOTE]  
 > None now
 
 ## Getting the sources
 
-You don't need this step if you are using [Docker](###Method1: Using Docker) because we have put the sources into the directory `~/caffeinix`. But the only thing you need to do is entering the directory `~/caffeinix` then run `git pull origin main` command to avoiding the source is old.
+You don't need this step if you are using **[Method 1: Using Docker](#Method-1-Using-Docker)** because we have put the sources into the directory `~/caffeinix`. But the only thing you need to do is entering the directory `~/caffeinix` then run `git pull origin main` command to avoiding the source is old.
 
 ```bash
 $ git clone https://github.com/TroyMitchell911/caffeinix.git

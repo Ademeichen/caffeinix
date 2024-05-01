@@ -1,5 +1,7 @@
 #include <uart.h>
 #include <string.h>
+#include <spinlock.h>
+#include <process.h>
 
 #define REG(r)                  ((volatile unsigned char *)(UART0 + r))
 
@@ -33,6 +35,16 @@
 #define REG_R(r)                (*(REG(r)))
 #define REG_W(r, v)             (*(REG(r)) = (v))
 
+#define UART_TX_BUF_SIZE 32
+
+extern volatile uint8 paniced;
+
+static struct spinlock lock;
+static uart_rx_callback_t rx_callback;
+char uart_tx_buf[UART_TX_BUF_SIZE];
+uint64 uart_tx_w; // write next to uart_tx_buf[uart_tx_w % UART_TX_BUF_SIZE]
+uint64 uart_tx_r; // read next from uart_tx_buf[uart_tx_r % UART_TX_BUF_SIZE]
+
 void uart_init(void)
 {
         /* disable interrupts. */
@@ -57,12 +69,80 @@ void uart_init(void)
         REG_W(FCR, FCR_FIFO_ENABLE | FCR_FIFO_CLEAR);
 
         /* enable transmit and receive interrupts. */
-        // REG_W(IER, IER_TX_ENABLE | IER_RX_ENABLE);
+        REG_W(IER, IER_TX_ENABLE | IER_RX_ENABLE);
+
+        spinlock_init(&lock, "uart");
 }
 
+void uart_start(void)
+{
+        if(paniced) {
+                for(;;);        
+        }
+        while(1){
+                if(uart_tx_w == uart_tx_r){
+                        /* Transmit buffer is empty. */
+                        return;
+                }
+
+                if((REG_R(LSR) & LSR_TX_IDLE) == 0){
+                        /*  
+                                the UART transmit holding register is full,
+                                so we cannot give it another byte.
+                                it will interrupt when it's ready for a new byte. 
+                        */
+                        return;
+                }
+
+                int c = uart_tx_buf[uart_tx_r % UART_TX_BUF_SIZE];
+                uart_tx_r += 1;
+
+                /* Wake up tasks that are sleeping because uart_putc */
+                wakeup(&uart_tx_r);
+
+                REG_W(THR, c);
+        }  
+}
+
+/* 
+        IMPORTANCE: 
+        This function can't be called in the interrupt!
+        Because it may causes blocked.
+ */
 void uart_putc(int c)
 {
-        REG_W(THR, c);
+        spinlock_acquire(&lock);
+
+        if(paniced) {
+                for(;;);        
+        }
+
+        while(uart_tx_w == uart_tx_r + UART_TX_BUF_SIZE){
+                /* Buffer is full. Wait for uart_start() to open up space in the buffer. */
+                sleep(&uart_tx_r, &lock);
+        }
+        uart_tx_buf[uart_tx_w % UART_TX_BUF_SIZE] = c;
+        uart_tx_w += 1;
+        uart_start();
+        spinlock_release(&lock);
+}
+
+/* 
+        Alternate version of uart_putc() 
+        It can be called in the interrupt
+*/
+void uart_putc_sync(int c)
+{
+      enter_critical();
+
+      if(paniced) {
+                for(;;);        
+      }
+
+      while((REG_R(LSR) & LSR_TX_IDLE) == 0);
+      REG_W(THR, c);
+
+      exit_critical();  
 }
 
 void uart_puts(const char* str)
@@ -71,6 +151,35 @@ void uart_puts(const char* str)
         n = strlen(str);
 
         while(n --) {
-                uart_putc(*str++);
+                uart_putc_sync(*str++);
         }
+}
+
+int uart_getc(void)
+{
+        if(REG_R(LSR) & 0x01) {
+                return REG_R(RHR);
+        } else {
+                return -1;
+        }
+}
+
+void uart_register_rx_callback(uart_rx_callback_t callback) 
+{
+        rx_callback = callback;
+}
+
+void uart_intr(void)
+{
+        int c;
+        while(1) {
+                c = uart_getc();
+                if(c == -1) {
+                        break;
+                }
+                rx_callback(c);
+        }
+        spinlock_acquire(&lock);
+        uart_start();
+        spinlock_release(&lock);
 }

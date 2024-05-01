@@ -60,24 +60,35 @@ TARGET := $(OUTPUT)/kernel
 build:
 	bear -- make all
 
+fsimg: 
+	qemu-img create -f raw ./mkfs/fsimg.img 16M
+
 all : start_recursive_build $(TARGET)
 	@echo $(TARGET) has been built!
 
 start_recursive_build:
 	make -C ./ -f $(TOPDIR)/Makefile.build
 
-$(TARGET) : built-in.o
-	if [ ! -d $(OUTPUT) ]; then \
-        mkdir $(OUTPUT); \
-    fi
+$(TARGET) : built-in.o user/initcode fsimg
+	@if [ ! -d $(OUTPUT) ]; then \
+        	mkdir $(OUTPUT); \
+    	fi
 	$(LD) $(LDFLAGS) -T kernel/kernel.ld -o $(TARGET) built-in.o
 	$(OBJDUMP) -S $(TARGET) > $(TARGET).asm
 	$(OBJDUMP) -t $(TARGET) | sed '1,/SYMBOL TABLE/d; s/ .* / /; /^$$/d' > $(TARGET).sym
-	rm -f $(shell find -name "*.o")
+	@rm -f $(shell find -name "*.o")
+
+user/initcode: user/initcode.S 
+	$(CC) $(CFLAGS) -march=rv64g -nostdinc -I ./kernel/include/ -c user/initcode.S -o user/initcode.o
+	$(LD) $(LDFLAGS) -N -e start -Ttext 0 -o user/initcode.out user/initcode.o
+	$(OBJCOPY) -S -O binary user/initcode.out user/initcode
+	$(OBJDUMP) -S user/initcode.o > user/initcode.asm
 
 QEMU = qemu-system-riscv64
 QEMUOPTS = -machine virt -bios none -kernel $(TARGET) -m 128M -smp $(CPUS) -nographic
 QEMUOPTS += -global virtio-mmio.force-legacy=false
+QEMUOPTS += -drive file=./mkfs/fsimg.img,if=none,format=raw,id=x0
+QEMUOPTS += -device virtio-blk-device,drive=x0,bus=virtio-mmio-bus.0
 ifndef CPUS
 CPUS := 1
 endif
@@ -99,11 +110,11 @@ qemu-gdb: all .gdbinit
 	@echo "*** Now run 'gdb' in another window." 1>&2
 
 clean:
-	rm -f $(shell find -name "*.o")
-	rm -f $(shell find -name "*.asm")
-	rm -f $(shell find -name "*.sym")
-	rm -f $(shell find -name "*.d")
+	@rm -f $(shell find -name "*.o")
+	@rm -f $(shell find -name "*.asm")
+	@rm -f $(shell find -name "*.sym")
+	@rm -f $(shell find -name "*.d")
 
 distclean: clean
-	rm -f $(shell find -name "compile_commands.json")
-	rm -f $(TARGET)
+	@rm -f $(shell find -name "compile_commands.json")
+	@rm -f $(TARGET)

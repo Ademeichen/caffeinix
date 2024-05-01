@@ -24,16 +24,23 @@ void setup(void)
 
         /* Dsiable page-table function */
         satp_w(0);
+
+        /* Delegate all interrupts and exceptions to supervisor mode. */
+        medeleg_w(0xffff);
+        mideleg_w(0xffff);
+        /* Enable interrupt */
+        sie_w(sie_r() | SIE_SEIE | SIE_SSIE | SIE_STIE);
         
         /* Allow 'Supervisor mode' to access all 128M of memory */
         pmpaddr0_w(0x3fffffffffffffull);
         pmpcfg0_w(0xf);
 
-        sie_w(sie_r() | SIE_SEIE | SIE_SSIE | SIE_STIE);
-
         /* Initialize the timer corresponding to each hart */
         hartid = mhartid_r();
-        timer_init(hartid);
+        /* Write hartid into the register 'tp' */
+        tp_w(hartid);
+
+        // timer_init(hartid);
 
         /* Enter 'Supervisor mode' and 'main'  */
         asm volatile("mret");
