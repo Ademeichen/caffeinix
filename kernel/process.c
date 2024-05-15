@@ -1,19 +1,31 @@
+/*
+ * @Author: TroyMitchell
+ * @Date: 2024-04-30 06:23
+ * @LastEditors: TroyMitchell
+ * @LastEditTime: 2024-05-15
+ * @FilePath: /caffeinix/kernel/process.c
+ * @Description: 
+ * Words are cheap so I do.
+ * Copyright (c) 2024 by TroyMitchell, All Rights Reserved. 
+ */
 #include <process.h>
 #include <palloc.h>
 #include <mem_layout.h>
 #include <kernel_config.h>
 #include <vm.h>
 #include <scheduler.h>
-#include <string.h>
+#include <mystring.h>
+#include <file.h>
+#include <dirent.h>
 
 /* From trampoline.S */
 extern char trampoline[];
 
-static struct spinlock pid_lock;
+static struct spinlock pid_lock, wait_lock;
 struct process proc[NPROC];
 static int next_pid = 1;
 
-static pagedir_t proc_pagedir(process_t p)
+pagedir_t process_pagedir(process_t p)
 {
         int ret;
         pagedir_t pgdir;
@@ -35,12 +47,24 @@ static pagedir_t proc_pagedir(process_t p)
         return pgdir;
 }
 
+void process_freepagedir(pagedir_t pgdir, uint64 sz)
+{
+        vm_unmap(pgdir, TRAPFRAME, 1, 0);
+        vm_unmap(pgdir, TRAMPOLINE, 1, 0);
+        vm_unmap(pgdir, 0, PGROUNDUP(sz) / PGSIZE, 1);
+        pagedir_free(pgdir);
+}
+
 /* This function is the first when a process first start */
 static void proc_first_start(void)
 {
+        static uint8 first = 0;
         /* The function scheduler will acquire the lock */
         spinlock_release(&cur_proc()->lock);
-        
+        if(!first) {
+                first = 1;
+                fs_init(1);
+        }
         extern void user_trap_ret(void);
         user_trap_ret();
 }
@@ -54,7 +78,7 @@ static int pid_alloc(void)
         spinlock_release(&pid_lock);
         return pid;
 }
-
+#ifndef PROCESS_NO_SCHED
 void sleep(void* chan, spinlock_t lk)
 {
         process_t p = cur_proc();
@@ -86,9 +110,42 @@ void wakeup(void* chan)
                 }
         }
 }
+void sleep_(void* chan, spinlock_t lk)
+{
+        sleep(chan, lk);
+}
+void wakeup_(void* chan)
+{
+        wakeup(chan);
+}
+#else
+/* TODO */
+static volatile uint8 test_flag = 0;
+void sleep_(void* chan, spinlock_t lk)
+{
+        test_flag = 1;
+        spinlock_release(lk);
+        intr_on();
+        while(test_flag);
+        spinlock_acquire(lk);
+}
 
+void wakeup_(void* chan)
+{
+        test_flag = 0;
+}
+void sleep(void* chan, spinlock_t lk)
+{
+ 
+}
+
+void wakeup(void* chan)
+{
+
+}
+#endif
 /* Alloc a process */
-process_t process_alloc(void)
+static process_t process_alloc(void)
 {
         process_t process;
         for(process = proc; process != &proc[NPROC - 1]; process++) {
@@ -105,7 +162,7 @@ found:
                 goto r1;
         }
         /* Alloc memory for page-table */
-        process->pagetable = proc_pagedir(process);
+        process->pagetable = process_pagedir(process);
         if(!process->pagetable) {
                 goto r2;
         }
@@ -127,6 +184,22 @@ r2:
 r1:
         spinlock_release(&process->lock);
         return 0;
+}
+
+static void process_free(process_t p)
+{
+        if(p->pagetable) {
+                process_freepagedir(p->pagetable, p->sz);
+        }
+        if(p->trapframe)
+                pfree(p->trapframe);
+        p->trapframe = 0;
+        p->pid = 0;
+        p->sz = 0;
+        p->state = UNUSED;
+        p->parent = 0;
+        p->sleep_chan = 0;
+        p->name[0] = 0;
 }
 
 /* Be called by vm_create */
@@ -151,6 +224,7 @@ void process_init(void)
         process_t p = proc;
         /* Init the spinlock */
         spinlock_init(&pid_lock, "pid_lock");
+        spinlock_init(&wait_lock, "wait_lock");
         /* Set the state and starting kernel stack address of each process */
         for(; p <= &proc[NCPU - 1]; p++) {
                 spinlock_init(&p->lock, "proc");
@@ -195,6 +269,8 @@ void userinit(void)
         /* Copy the code of first process into the memory that we just alloced */
         memmove(mem, initcode, sizeof(initcode));
 
+        p->cwd = namei("/");
+
         /* Set the epc to '0' because we have mapped the code to lowest address */
         p->trapframe->epc = 0;
         /* Set the stack pointer to highest address in memory we just alloced */
@@ -203,10 +279,80 @@ void userinit(void)
         /* Record how many memory we used */
         p->sz = PGSIZE;
 
-        p->name = "initcode";
+        safe_strncpy(p->name, "initcode", MAXNAME);
         /* Allow schedule */
         p->state = RUNNABLE;
 
         /* The lock will be held in process_alloc */
         spinlock_release(&p->lock);
+}
+
+int either_copyout(int user_dst, uint64 dst, void* src, uint64 len)
+{
+        process_t p = cur_proc();
+
+        if(user_dst) {
+                return copyout(p->pagetable, dst, (char*)src, len);
+        } else {
+                memmove((char*)dst, src, len);
+                return 0;
+        }
+}
+
+int either_copyin(void *dst, int user_src, uint64 src, uint64 len)
+{
+        process_t p = cur_proc();
+
+        if(user_src) {
+                return copyin(p->pagetable, (char*)dst, src, len);
+        } else {
+                memmove(dst, (char*)src, len);
+                return 0;
+        }
+}
+
+/* TODO: test */
+int fork(void)
+{
+        int pid, i;
+        process_t oldp, newp;
+
+        oldp = cur_proc();
+        newp = process_alloc();
+
+        if(!newp)
+                return -1;
+        if(vm_copy(oldp->pagetable, newp->pagetable, oldp->sz) != 0) {
+                process_free(newp);
+                spinlock_release(&newp->lock);
+                return -1;
+        }
+
+        newp->sz = oldp->sz;
+        *newp->trapframe = *oldp->trapframe;
+
+        pid = newp->pid;
+        newp->trapframe->a0 = 0;
+
+        for(i = 0; i < NOFILE; i++) {
+                if(oldp->ofile[i] == 0)
+                        break;
+                newp->ofile[i] = file_dup(oldp->ofile[i]);
+        }
+        newp->cwd = idup(oldp->cwd);
+
+        safe_strncpy(newp->name, "test", MAXNAME);
+
+        spinlock_release(&newp->lock);
+
+        spinlock_acquire(&wait_lock);
+        newp->parent = oldp;
+        spinlock_release(&wait_lock);
+
+        spinlock_acquire(&newp->lock);
+        newp->state = RUNNABLE;
+        spinlock_release(&newp->lock);
+
+        /* Return for parent process */
+        return pid;
 }

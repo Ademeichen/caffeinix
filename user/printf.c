@@ -1,19 +1,27 @@
-#include <printf.h>
+/*
+ * @Author: TroyMitchell
+ * @Date: 2024-05-14
+ * @LastEditors: TroyMitchell
+ * @LastEditTime: 2024-05-14
+ * @FilePath: /caffeinix/user/printf.c
+ * @Description: 
+ * Words are cheap so I do.
+ * Copyright (c) 2024 by TroyMitchell, All Rights Reserved. 
+ */
+
 #include <stdarg.h>
-#include <spinlock.h>
-#include <debug.h>
 
-volatile uint8 paniced = 0;
+#include "user.h"
+#include "../arch/riscv/include/typedefs.h"
 
-static const char digits[] = "0123456789abcdef";
-static struct {
-        struct spinlock lock;
-        /* This flag for panic */
-        uint8 locking;
-}pf;
+static char digits[] = "0123456789ABCDEF";
 
-/* Print a integer */
-static void print_int(int number, uint8 base, uint8 sign)
+static void putc(int fd, char c)
+{
+        write(fd, &c, 1);
+}
+
+static void print_int(int fd, int number, uint8 base, uint8 sign)
 {
         char buf[16];
         int i;
@@ -34,38 +42,29 @@ static void print_int(int number, uint8 base, uint8 sign)
                 buf[i++] = '-';
         /* Inverted output */
         while(--i >= 0)
-                console_putc(buf[i]);
+                putc(fd, buf[i]);
 }
 
 /* Print a pointer */
-static void print_ptr(uint64 ptr)
+static void print_ptr(int fd, uint64 ptr)
 {
         int i;
-        console_putc('0');
-        console_putc('x');
+        putc(fd, '0');
+        putc(fd, 'x');
         /* Output every 4 bits as a number */
         for (i = 0; i < (sizeof(uint64) * 2); i++, ptr <<= 4)
-                console_putc(digits[ptr >> (sizeof(uint64) * 8 - 4)]);
+                putc(fd, digits[ptr >> (sizeof(uint64) * 8 - 4)]);
 }
 
-void printf(char* fmt, ...)
+static void vprintf(int fd, const char* fmt, va_list ap)
 {
-        va_list ap;
-        int i, c, locking;
+        int i, c;
         char *s;
 
-        locking = pf.locking;
-        if(locking)
-                spinlock_acquire(&pf.lock);
-
-        if(fmt == 0)
-                PANIC("printf");
-
-        va_start(ap, fmt);
         for(i = 0; (c = fmt[i] & 0xff) != 0; i++) {
                 /* We directly output if no converting symbol */
                 if(c != '%'){
-                        console_putc(c);
+                        putc(fd, c);
                         continue;
                 }
                 /* Get next character if converting symbol */
@@ -73,54 +72,53 @@ void printf(char* fmt, ...)
                 switch(c) {
                         /* Dec */
                         case 'd':
-                                print_int(va_arg(ap, int), 10, 1);
+                                print_int(fd, va_arg(ap, int), 10, 1);
                                 break;
                         /* Hex */
                         case 'x':
-                                print_int(va_arg(ap, int), 16, 1);
+                                print_int(fd, va_arg(ap, int), 16, 1);
                                 break;
                         /* Pointer */
                         case 'p':
-                                print_ptr(va_arg(ap, uint64));
+                                print_ptr(fd, va_arg(ap, uint64));
                                 break;
                         /* String */
                         case 's':
                                 if((s = va_arg(ap, char*)) == 0)
                                 s = "(null)";
                                 for(; *s; s++)
-                                        console_putc(*s);
+                                        putc(fd, *s);
                                 break;
                         /* % */
                         case '%':
-                                console_putc('%');
+                                putc(fd, '%');
                                 break;
                         case 'c':
-                                console_putc(va_arg(ap, int));
+                                putc(fd, va_arg(ap, int));
                                 break;
                         /* Unknown converting symbol */
                         default:     
-                                console_putc('%');
-                                console_putc(c);
+                                putc(fd, '%');
+                                putc(fd, c);
                                 break;   
                 }
         }
+}
+
+void fprintf(int fd, const char * fmt, ...)
+{
+        va_list ap;
+        
+        va_start(ap, fmt);
+        vprintf(fd, fmt, ap);
         va_end(ap);
-
-        if(locking)
-                spinlock_release(&pf.lock);
 }
 
-void panic(char* s)
+void printf(const char *fmt, ...)
 {
-        pf.locking = 0;
-        printf("[PANIC]: %s\n", s);
-        paniced = 1;
-        for(;;);
-}
+        va_list ap;
 
-void printf_init(void)
-{
-        spinlock_init(&pf.lock, "printf");
-        /* No panic */
-        pf.locking = 1;
+        va_start(ap, fmt);
+        vprintf(1, fmt, ap);
+        va_end(ap);
 }
