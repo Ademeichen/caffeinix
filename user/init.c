@@ -2,7 +2,7 @@
  * @Author: TroyMitchell
  * @Date: 2024-05-08
  * @LastEditors: TroyMitchell
- * @LastEditTime: 2024-05-14
+ * @LastEditTime: 2024-05-15
  * @FilePath: /caffeinix/user/init.c
  * @Description: 
  * Words are cheap so I do.
@@ -13,8 +13,13 @@
 
 #define CONSOLE                 1  
 int main(void){
-        int ret, fd, pid;
+        int ret, fd;
         char buf[128];
+        buf[0] = 'f';
+        buf[1] = 'i';
+        buf[2] = 'l';
+        buf[0] = 'e';
+        buf[4] = '\0';
         
         fd = open("console", O_RDWR);
         if(fd == -1) {
@@ -26,11 +31,14 @@ int main(void){
         if(fd != -1)
                 fd = dup(fd);
 
-        /* For pid test */
-        pid = getpid();
-        printf("Get pid: %d\n", pid);
-        ret = fork();
-        printf("Result from fork: %d\n", ret);
+        /*For mkdir test*/
+        const char *directory_name = "dir_name";
+        if (mkdir(directory_name) == -1) {
+                printf("mkdir error\n");
+        }else {
+                printf("mkdir created successfully.\n");
+        }
+
         for(;;) {
                 if(fd != -1) {
                         ret = read(fd, buf, 128);
@@ -40,5 +48,6 @@ int main(void){
                         }
                 }  
         }
+
         return 0;
 }

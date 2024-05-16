@@ -2,7 +2,7 @@
  * @Author: TroyMitchell
  * @Date: 2024-04-30 06:23
  * @LastEditors: TroyMitchell
- * @LastEditTime: 2024-05-14
+ * @LastEditTime: 2024-05-15
  * @FilePath: /caffeinix/kernel/process.c
  * @Description: 
  * Words are cheap so I do.
@@ -110,6 +110,14 @@ void wakeup(void* chan)
                 }
         }
 }
+void sleep_(void* chan, spinlock_t lk)
+{
+        sleep(chan, lk);
+}
+void wakeup_(void* chan)
+{
+        wakeup(chan);
+}
 #else
 /* TODO */
 static volatile uint8 test_flag = 0;
@@ -191,7 +199,7 @@ static void process_free(process_t p)
         p->state = UNUSED;
         p->parent = 0;
         p->sleep_chan = 0;
-        p->name = 0;
+        p->name[0] = 0;
 }
 
 /* Be called by vm_create */
@@ -271,7 +279,7 @@ void userinit(void)
         /* Record how many memory we used */
         p->sz = PGSIZE;
 
-        p->name = "initcode";
+        safe_strncpy(p->name, "initcode", MAXNAME);
         /* Allow schedule */
         p->state = RUNNABLE;
 
@@ -324,6 +332,7 @@ int fork(void)
         *newp->trapframe = *oldp->trapframe;
 
         pid = newp->pid;
+        newp->trapframe->a0 = 0;
 
         for(i = 0; i < NOFILE; i++) {
                 if(oldp->ofile[i] == 0)
@@ -331,6 +340,8 @@ int fork(void)
                 newp->ofile[i] = file_dup(oldp->ofile[i]);
         }
         newp->cwd = idup(oldp->cwd);
+
+        safe_strncpy(newp->name, "test", MAXNAME);
 
         spinlock_release(&newp->lock);
 
@@ -344,5 +355,4 @@ int fork(void)
 
         /* Return for parent process */
         return pid;
-
 }
