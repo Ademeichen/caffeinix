@@ -57,15 +57,15 @@ void* memmove(void *dst, const void *src, uint16 n)
 
 char* strchr(const char* s, char c)
 {
-		while(*s !='\0'){	
-			if(*s==c )
-			{
-			return(char*)s;		
+		
+	while(*s !='\0'){	
+				if(*s==c )
+				{
+				return(char*)s; 	
+				}
+				s++;
 			}
-			s++;
-		}
-		return 0;
-
+			return 0;
 }
 
 int strcmp(const char *p, const char *q)
